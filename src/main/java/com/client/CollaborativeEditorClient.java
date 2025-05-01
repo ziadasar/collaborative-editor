@@ -24,6 +24,7 @@ public class CollaborativeEditorClient extends Application {
         editor.setOnKeyTyped(e -> {
             String input = e.getCharacter();
             if (input.length() == 1) {
+                System.out.println("✍️ Sending char: " + input.charAt(0));
                 stompClient.sendInsert(input.charAt(0));
             }
         });
@@ -31,7 +32,7 @@ public class CollaborativeEditorClient extends Application {
         VBox root = new VBox(editor);
         Scene scene = new Scene(root, 600, 400);
         stage.setScene(scene);
-        stage.setTitle("Collaborative Editor (STOMP)");
+        stage.setTitle("Collaborative Editor ");
         stage.show();
     }
 

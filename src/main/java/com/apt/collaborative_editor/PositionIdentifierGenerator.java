@@ -20,10 +20,10 @@ public class PositionIdentifierGenerator {
 
             if (nextDigit - prevDigit > 1) {
                 int newDigit = randomBetween(prevDigit + 1, nextDigit - 1);
-                newPath.add(new PositionComponent(newDigit, userId));
+                newPath.add(new PositionComponent());
                 return new PositionIdentifier(newPath);
             } else {
-                newPath.add(new PositionComponent(prevDigit, userId));
+                newPath.add(new PositionComponent());
                 depth++;
             }
         }

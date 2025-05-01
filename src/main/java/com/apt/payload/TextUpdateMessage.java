@@ -1,6 +1,5 @@
 package com.apt.payload;
 
-
 import lombok.AllArgsConstructor;
 import lombok.Data;
 
@@ -9,5 +8,12 @@ import lombok.Data;
 public class TextUpdateMessage {
     private String docId;
     private String updatedText;
-}
 
+    @Override
+    public String toString() {
+        return "TextUpdateMessage{" +
+                "docId='" + docId + '\'' +
+                ", updatedText='" + updatedText + '\'' +
+                '}';
+    }
+}
