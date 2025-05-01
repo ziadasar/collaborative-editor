@@ -1,134 +1,162 @@
 package com.apt.collaborative_editor.Model.CRDT;
 
 import java.util.*;
-import java.util.stream.Collectors;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
+
+import com.apt.collaborative_editor.Model.CRDT.Operations.CRDTOperation;
+import com.apt.collaborative_editor.Model.CRDT.Operations.DeleteOperation;
+import com.apt.collaborative_editor.Model.CRDT.Operations.InsertOperation;
 
 public class CRDTDocument {
     private final UUID documentId;
     private final Map<UUID, CRDTNode> nodes;
     private final Map<UUID, List<UUID>> childMap;
     private final UUID rootId;
-    private long logicalClock;
+    private final AtomicLong logicalClock;
+    private transient final Object lock = new Object();
 
     public CRDTDocument(UUID documentId) {
         this.documentId = documentId;
-        this.nodes = new HashMap<>();
-        this.childMap = new HashMap<>();
+        this.nodes = new ConcurrentHashMap<>();
+        this.childMap = new ConcurrentHashMap<>();
         this.rootId = UUID.randomUUID();
-        this.logicalClock = 0;
+        this.logicalClock = new AtomicLong(0);
+        initializeRootNode();
+    }
 
-        // Create root node
+    private void initializeRootNode() {
         CRDTNode root = new CRDTNode(UUID.randomUUID(), 0, null, null);
         nodes.put(rootId, root);
-        childMap.put(rootId, new ArrayList<>());
+        childMap.put(rootId, Collections.synchronizedList(new ArrayList<>()));
     }
 
-    // Insert a character after a specific position
-    public synchronized CRDTNode insert(char value, UUID userId, UUID afterNodeId) {
-        logicalClock++;
-        CRDTNode parent = nodes.get(afterNodeId != null ? afterNodeId : rootId);
+    public CRDTNode insert(int value, char userId, UUID afterNodeId) {
+        synchronized (lock) {
+            long timestamp = logicalClock.incrementAndGet();
+            UUID parentId = (afterNodeId != null) ? afterNodeId : rootId;
+            CRDTNode parent = nodes.get(parentId);
 
-        CRDTNode newNode = new CRDTNode(userId, logicalClock, value, parent.getId());
-        nodes.put(newNode.getId(), newNode);
+            if (parent == null) {
+                throw new IllegalStateException("Parent node not found");
+            }
 
-        // Update child map
-        if (!childMap.containsKey(parent.getId())) {
-            childMap.put(parent.getId(), new ArrayList<>());
-        }
-        childMap.get(parent.getId()).add(newNode.getId());
+            CRDTNode newNode = new CRDTNode(userId, timestamp, value, parent.getId());
+            nodes.put(newNode.getId(), newNode);
+            childMap.computeIfAbsent(parent.getId(), k -> Collections.synchronizedList(new ArrayList<>()))
+                    .add(newNode.getId());
 
-        return newNode;
-    }
-
-    // Delete a character
-    public synchronized void delete(UUID nodeId) {
-        if (nodes.containsKey(nodeId)) {
-            nodes.get(nodeId).delete();
+            return newNode;
         }
     }
 
-    // Generate the current document text
-    public synchronized String getText() {
-        StringBuilder sb = new StringBuilder();
-        traverse(rootId, sb);
-        return sb.toString();
+    public void delete(UUID nodeId) {
+        synchronized (lock) {
+            CRDTNode node = nodes.get(nodeId);
+            if (node != null) {
+                node.delete();
+            }
+        }
     }
 
-    // Depth-first traversal to build the document
+    public String getText() {
+        synchronized (lock) {
+            StringBuilder sb = new StringBuilder();
+            traverse(rootId, sb);
+            return sb.toString();
+        }
+    }
+
     private void traverse(UUID nodeId, StringBuilder sb) {
         List<UUID> children = childMap.getOrDefault(nodeId, Collections.emptyList());
 
-        // Sort children by timestamp (descending) and then by userId (ascending)
-        children.sort((a, b) -> {
-            CRDTNode nodeA = nodes.get(a);
-            CRDTNode nodeB = nodes.get(b);
-            int timeCompare = Long.compare(nodeB.getTimestamp(), nodeA.getTimestamp());
-            if (timeCompare != 0)
-                return timeCompare;
-            return nodeA.getUserId().compareTo(nodeB.getUserId());
-        });
+        children.stream()
+                .sorted(this::compareNodes)
+                .forEach(childId -> {
+                    CRDTNode child = nodes.get(childId);
+                    if (!child.isDeleted() && child.getValue() != null) {
+                        sb.append(child.getValue());
+                        traverse(childId, sb);
+                    }
+                });
+    }
 
-        for (UUID childId : children) {
-            CRDTNode child = nodes.get(childId);
-            if (!child.isDeleted()) {
-                if (child.getValue() != null) {
-                    sb.append(child.getValue());
-                }
-                traverse(childId, sb);
-            }
+    private int compareNodes(UUID a, UUID b) {
+        CRDTNode nodeA = nodes.get(a);
+        CRDTNode nodeB = nodes.get(b);
+        int timeCompare = Long.compare(nodeB.getTimestamp(), nodeA.getTimestamp());
+        return (timeCompare != 0) ? timeCompare : nodeA.getUserId().compareTo(nodeB.getUserId());
+    }
+
+    public UUID findNodeAtPosition(int position) {
+        synchronized (lock) {
+            if (position < 0)
+                return null;
+
+            AtomicInteger counter = new AtomicInteger(0);
+            UUID[] result = new UUID[1];
+            findPosition(rootId, position, counter, result);
+            return result[0];
         }
     }
 
-    // Find the node at a specific position in the document
-    public synchronized UUID findNodeAtPosition(int position) {
-        List<UUID> path = new ArrayList<>();
-        findPosition(rootId, position, path);
-        return path.isEmpty() ? null : path.get(path.size() - 1);
+    private void findPosition(UUID nodeId, int targetPos,
+            AtomicInteger currentPos, UUID[] result) {
+        childMap.getOrDefault(nodeId, Collections.emptyList())
+                .stream()
+                .sorted(this::compareNodes)
+                .forEach(childId -> {
+                    if (result[0] != null)
+                        return;
+
+                    CRDTNode child = nodes.get(childId);
+                    if (!child.isDeleted() && child.getValue() != null) {
+                        if (currentPos.getAndIncrement() == targetPos) {
+                            result[0] = childId;
+                            return;
+                        }
+                        findPosition(childId, targetPos, currentPos, result);
+                    }
+                });
     }
 
-    private int findPosition(UUID nodeId, int remaining, List<UUID> path) {
-        List<UUID> children = childMap.getOrDefault(nodeId, Collections.emptyList());
-
-        // Sort children as in traverse
-        children.sort((a, b) -> {
-            CRDTNode nodeA = nodes.get(a);
-            CRDTNode nodeB = nodes.get(b);
-            int timeCompare = Long.compare(nodeB.getTimestamp(), nodeA.getTimestamp());
-            if (timeCompare != 0)
-                return timeCompare;
-            return nodeA.getUserId().compareTo(nodeB.getUserId());
-        });
-
-        for (UUID childId : children) {
-            CRDTNode child = nodes.get(childId);
-            if (!child.isDeleted() && child.getValue() != null) {
-                if (remaining == 0) {
-                    path.add(childId);
-                    return 0;
-                }
-                remaining--;
-            }
-
-            remaining = findPosition(childId, remaining, path);
-            if (!path.isEmpty())
-                return remaining;
+    // In CRDTDocument.java
+    public synchronized void applyOperation(CRDTOperation operation) {
+        if (operation instanceof InsertOperation) {
+            InsertOperation insertOp = (InsertOperation) operation;
+            this.insert(insertOp.getValue(), insertOp.getUserId(), insertOp.getAfterNodeId());
+        } else if (operation instanceof DeleteOperation) {
+            DeleteOperation deleteOp = (DeleteOperation) operation;
+            this.delete(deleteOp.getNodeId());
         }
-
-        return remaining;
     }
 
-    // Get all nodes (for serialization)
-    public synchronized Collection<CRDTNode> getAllNodes() {
-        return new ArrayList<>(nodes.values());
-    }
-
-    // Add a node (for deserialization)
-    public synchronized void addNode(CRDTNode node) {
-        nodes.put(node.getId(), node);
-        if (!childMap.containsKey(node.getParentId())) {
-            childMap.put(node.getParentId(), new ArrayList<>());
+    public Collection<CRDTNode> getAllNodes() {
+        synchronized (lock) {
+            return new ArrayList<>(nodes.values());
         }
-        childMap.get(node.getParentId()).add(node.getId());
-        logicalClock = Math.max(logicalClock, node.getTimestamp());
+    }
+
+    public void addNode(CRDTNode node) {
+        synchronized (lock) {
+            nodes.put(node.getId(), node);
+            childMap.computeIfAbsent(node.getParentId(), k -> Collections.synchronizedList(new ArrayList<>()))
+                    .add(node.getId());
+            logicalClock.set(Math.max(logicalClock.get(), node.getTimestamp()));
+        }
+    }
+
+    // Additional helpful methods
+    public int getDocumentLength() {
+        synchronized (lock) {
+            return getText().length();
+        }
+    }
+
+    public boolean containsNode(UUID nodeId) {
+        synchronized (lock) {
+            return nodes.containsKey(nodeId) && !nodes.get(nodeId).isDeleted();
+        }
     }
 }

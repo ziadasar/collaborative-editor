@@ -7,9 +7,10 @@ import org.springframework.boot.json.JsonParseException;
 import org.springframework.messaging.handler.annotation.DestinationVariable;
 import org.springframework.messaging.handler.annotation.MessageMapping;
 import org.springframework.stereotype.Controller;
-import com.example.collaborativeeditor.model.crdt.CRDTOperation;
-import com.example.collaborativeeditor.service.DocumentManager;
-import com.example.collaborativeeditor.util.CRDTSerializer;
+
+import com.apt.collaborative_editor.Model.CRDT.Operations.CRDTOperation;
+import com.apt.collaborative_editor.Model.Util.CRDTSerializer;
+import com.apt.collaborative_editor.Service.DocumentManager;
 
 @Controller
 public class CollaborationController {
@@ -26,6 +27,7 @@ public class CollaborationController {
             @DestinationVariable UUID userId,
             String message) {
         try {
+            
             CRDTOperation op = serializer.deserialize(message);
             documentManager.applyOperation(docId, op);
         } catch (JsonParseException e) {
